@@ -13,7 +13,7 @@ import { info, error } from "../utils/logger.js";
  */
 export const createInvoice = async (req, res) => {
   try {
-    const { customerId, items, discount = 0, paidAmount = 0, paymentMethod } = req.body;
+    const { customerId, items, discount = 0, paidAmount = 0, paymentMethod, creditApplied = 0 } = req.body;
 
     if (!items || items.length === 0)
       return res.status(400).json({ message: "No items in invoice" });
@@ -53,13 +53,14 @@ export const createInvoice = async (req, res) => {
     }
 
     // Verify customer belongs to current user if provided
+    let customer = null;
     if (customerId) {
       // Validate ObjectId format
       if (!mongoose.Types.ObjectId.isValid(customerId)) {
         return res.status(400).json({ message: "Invalid customer ID format" });
       }
 
-      const customer = await Customer.findOne({
+      customer = await Customer.findOne({
         _id: customerId,
         owner: req.user._id
       });
@@ -68,21 +69,46 @@ export const createInvoice = async (req, res) => {
           message: "Customer not found or unauthorized"
         });
       }
+
+      // Validate credit application if creditApplied > 0
+      if (creditApplied > 0) {
+        const availableCredit = Math.abs(Math.min(0, customer.dues)); // Credit is negative dues
+        if (availableCredit === 0) {
+          return res.status(400).json({
+            message: "Customer has no available credit"
+          });
+        }
+        if (creditApplied > availableCredit) {
+          return res.status(400).json({
+            message: `Credit applied (₹${creditApplied}) exceeds available credit (₹${availableCredit})`
+          });
+        }
+        if (creditApplied > totalAmount) {
+          return res.status(400).json({
+            message: `Credit applied (₹${creditApplied}) exceeds invoice total (₹${totalAmount})`
+          });
+        }
+      }
+    } else if (creditApplied > 0) {
+      return res.status(400).json({
+        message: "Cannot apply credit for walk-in customers"
+      });
     }
 
     // Handle overpayment and change return
-    const changeOwed = Math.max(0, paidAmount - totalAmount);
+    const effectivePaidAmount = paidAmount + creditApplied; // Credit counts as payment
+    const changeOwed = Math.max(0, effectivePaidAmount - totalAmount);
     const changeReturned = parseFloat(req.body.changeReturned) || 0;
     const changeNotReturned = Math.max(0, changeOwed - changeReturned);
 
-    // Cap paidAmount at totalAmount (don't record overpayment)
-    const actualPaidAmount = Math.min(paidAmount, totalAmount);
+    // Cap actualPaidAmount at totalAmount (don't record overpayment)
+    const actualPaidAmount = Math.min(paidAmount, totalAmount - creditApplied);
 
-    // Determine payment status
+    // Determine payment status based on effective payment (cash + credit)
     let paymentStatus;
-    if (actualPaidAmount >= totalAmount) {
+    if (effectivePaidAmount >= totalAmount) {
       paymentStatus = "paid";
-    } else if (actualPaidAmount > 0) {
+    } else if (effectivePaidAmount > 0) {
       paymentStatus = "partial";
     } else {
       paymentStatus = "unpaid";
@@ -113,6 +139,7 @@ export const createInvoice = async (req, res) => {
       discount,
       totalAmount,
       paidAmount: actualPaidAmount,
+      creditApplied,
       paymentMethod,
       paymentStatus,
       createdBy: req.user._id,
@@ -123,9 +150,24 @@ export const createInvoice = async (req, res) => {
       await Item.findByIdAndUpdate(it.item, { $inc: { stockQty: -it.quantity } });
     }
 
-    // Handle customer dues if unpaid
-    if (customerId && actualPaidAmount < totalAmount) {
-      const dueAmount = totalAmount - actualPaidAmount;
+    // Handle customer credit usage
+    if (customerId && creditApplied > 0) {
+      // Increase dues by creditApplied (reduce customer credit)
+      await Customer.findByIdAndUpdate(customerId, { $inc: { dues: creditApplied } });
+
+      await Transaction.create({
+        type: "payment",
+        customer: customerId,
+        invoice: invoice._id,
+        amount: creditApplied,
+        paymentMethod: "credit",
+        description: `Customer credit applied to invoice ${invoiceNo}`,
+      });
+    }
+
+    // Handle customer dues if unpaid (after credit application)
+    if (customerId && effectivePaidAmount < totalAmount) {
+      const dueAmount = totalAmount - effectivePaidAmount;
       await Customer.findByIdAndUpdate(customerId, { $inc: { dues: dueAmount } });
 
       await Transaction.create({

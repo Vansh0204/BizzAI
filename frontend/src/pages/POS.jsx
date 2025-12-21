@@ -26,6 +26,7 @@ const POS = () => {
         paymentMethod: 'cash',
         paidAmount: '',
         changeReturned: '',
+        applyCreditEnabled: false,
       }
     ];
   });
@@ -241,7 +242,28 @@ const POS = () => {
   };
 
   const calculateTotal = () => {
-    return calculateSubtotal() - activeTab.discount;
+    const subtotal = calculateSubtotal();
+    const afterDiscount = subtotal - activeTab.discount;
+
+    // Calculate credit to apply
+    const availableCredit = getAvailableCredit();
+    const creditToApply = activeTab.applyCreditEnabled ? Math.min(availableCredit, afterDiscount) : 0;
+
+    return afterDiscount - creditToApply;
+  };
+
+  const getAvailableCredit = () => {
+    if (!activeTab.customer || !activeTab.customer.dues) return 0;
+    // Credit is negative dues
+    return Math.abs(Math.min(0, activeTab.customer.dues));
+  };
+
+  const getCreditApplied = () => {
+    if (!activeTab.applyCreditEnabled) return 0;
+    const subtotal = calculateSubtotal();
+    const afterDiscount = subtotal - activeTab.discount;
+    const availableCredit = getAvailableCredit();
+    return Math.min(availableCredit, afterDiscount);
   };
 
   // Customer management
@@ -421,6 +443,7 @@ const POS = () => {
 
     const total = calculateTotal();
     const paid = parseFloat(activeTab.paidAmount) || 0;
+    const creditApplied = getCreditApplied();
 
     if (paid < 0) {
       alert('Invalid payment amount!');
@@ -443,6 +466,7 @@ const POS = () => {
       })),
       discount: parseFloat(activeTab.discount) || 0,
       paidAmount: paid,
+      creditApplied,
       paymentMethod: activeTab.paymentMethod,
       changeReturned: parseFloat(activeTab.changeReturned) || 0,
     };
@@ -564,19 +588,31 @@ const POS = () => {
               </div>
 
               {activeTab.customer ? (
-                <div className="flex items-center justify-between p-3 bg-indigo-50 rounded-lg">
-                  <div>
-                    <div className="font-medium text-gray-900">{activeTab.customer.name}</div>
-                    <div className="text-sm text-gray-600">{activeTab.customer.phone}</div>
+                <div>
+                  <div className="flex items-center justify-between p-3 bg-indigo-50 rounded-lg">
+                    <div className="flex-1">
+                      <div className="font-medium text-gray-900">{activeTab.customer.name}</div>
+                      <div className="text-sm text-gray-600">{activeTab.customer.phone}</div>
+                      {getAvailableCredit() > 0 && (
+                        <div className="mt-1 flex items-center space-x-1">
+                          <svg className="w-4 h-4 text-green-600" fill="currentColor" viewBox="0 0 20 20">
+                            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                          </svg>
+                          <span className="text-sm font-medium text-green-600">
+                            Available Credit: ₹{getAvailableCredit().toFixed(2)}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                    <button
+                      onClick={() => updateTabData({ customer: null, applyCreditEnabled: false })}
+                      className="text-red-600 hover:text-red-700"
+                    >
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                      </svg>
+                    </button>
                   </div>
-                  <button
-                    onClick={() => updateTabData({ customer: null })}
-                    className="text-red-600 hover:text-red-700"
-                  >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                  </button>
                 </div>
               ) : (
                 <button
@@ -699,6 +735,28 @@ const POS = () => {
                 />
               </div>
 
+              {/* Apply Customer Credit */}
+              {activeTab.customer && getAvailableCredit() > 0 && (
+                <div className="mb-4">
+                  <label className="flex items-center space-x-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={activeTab.applyCreditEnabled}
+                      onChange={(e) => updateTabData({ applyCreditEnabled: e.target.checked })}
+                      className="w-4 h-4 text-green-600 border-gray-300 rounded focus:ring-green-500"
+                    />
+                    <span className="text-sm font-medium text-gray-700">
+                      Apply Customer Credit (₹{getAvailableCredit().toFixed(2)} available)
+                    </span>
+                  </label>
+                  {activeTab.applyCreditEnabled && (
+                    <div className="mt-2 p-2 bg-green-50 border border-green-200 rounded text-sm text-green-800">
+                      ✓ Credit of ₹{getCreditApplied().toFixed(2)} will be applied
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Totals */}
               <div className="border-t border-gray-200 pt-4 mb-4 space-y-2">
                 <div className="flex justify-between text-sm">
@@ -709,6 +767,12 @@ const POS = () => {
                   <span className="text-gray-600">Discount:</span>
                   <span className="font-medium text-red-600">-₹{activeTab.discount.toFixed(2)}</span>
                 </div>
+                {activeTab.applyCreditEnabled && getCreditApplied() > 0 && (
+                  <div className="flex justify-between text-sm">
+                    <span className="text-gray-600">Credit Applied:</span>
+                    <span className="font-medium text-green-600">-₹{getCreditApplied().toFixed(2)}</span>
+                  </div>
+                )}
                 <div className="flex justify-between text-lg font-bold border-t pt-2">
                   <span>Total:</span>
                   <span className="text-indigo-600">₹{total.toFixed(2)}</span>
